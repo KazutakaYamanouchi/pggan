@@ -2,6 +2,7 @@ trial*
 image_root_folder
 .venv
 __pycache__
+assets
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
