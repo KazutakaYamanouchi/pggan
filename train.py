@@ -103,6 +103,8 @@ def inception_forward(images: torch.Tensor, feature_extractor, classifier) -> Tu
 
 
 def train(generator, discriminator, init_step, loader, total_iter=600000):
+    torch_fix_seed(args.seed)
+
     step = init_step  # can be 1 = 8, 2 = 16, 3 = 32, 4 = 64, 5 = 128, 6 = 256
     data_loader = sample_data(loader, 4 * 2 ** step)
     dataset = iter(data_loader)
