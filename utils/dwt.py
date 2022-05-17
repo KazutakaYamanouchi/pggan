@@ -1,3 +1,4 @@
+from curses import halfdelay
 import torch
 import torch.nn as nn
 
@@ -129,7 +130,8 @@ class DWT(nn.Module):
         # ll = self.to_ycbcr(shifted)
         ll = self.to_ycbcr(image)
         # DWTを0~32回で段階的に
-        for i in range(k):
+        num = [0, 3]
+        for i in range(num[k]):
             ll = self.dwt_vertical(self.dwt_horizontal(ll))
         # RGB変換(DCレベルシフト済み)
         rgb_shifted = self.to_rgb(ll)

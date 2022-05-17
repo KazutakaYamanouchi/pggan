@@ -175,22 +175,21 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
             dataset = iter(data_loader)
             real_image, label = next(dataset)
 
-        roop = total_iter // args.max_step
         half_flag = 0
-        if 2 * (iteration % roop) > roop:
+        if iteration * 2 > total_iter // args.max_step:
             half_flag = 1
+        if args.dct and step > 2:
+            wavelet = dct.DCT(half_flag)
+            wavelet = wavelet.to(device)
+        elif args.dwt and step > 2:
+            wavelet = dwt.DWT()
+            wavelet = wavelet.to(device)
         iteration += 1
         # 1. train Discriminator
         b_size = real_image.size(0)
         real_image = real_image.to(device)
         label = label.to(device)
-        if args.dct:
-            wavelet = dct.DCT()
-            wavelet = wavelet.to(device)
-            real_image = wavelet(real_image, half_flag)
-        elif args.dwt:
-            wavelet = dwt.DWT()
-            wavelet = wavelet.to(device)
+        if (args.dct or args.dwt) and step > 2:
             real_image = wavelet(real_image, half_flag)
 
         real_predict = discriminator(
