@@ -366,20 +366,6 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
         print(f'{assets_dir}にデータセット画像の評価を保存しました。')
 
     # =========================================================================== #
-    # 画像生成時間の計測
-    # =========================================================================== #
-    pbar = tqdm(range(10000), desc='画像生成時間を計測中...', total=10000, leave=False)
-    with torch.no_grad():
-        begin_time = perf_counter()
-        for _ in pbar:
-            z = torch.randn(b_size, input_code_size).to(device)
-            fakes = generator(z, step=step, alpha=alpha)
-        end_time = perf_counter()
-    s = f'画像生成時間: {(end_time - begin_time) / 10000:.07f}[s/image]'
-    print(s)
-    evaluate_file.write(f'{s}\n')
-
-    # =========================================================================== #
     # 生成画像の評価
     # =========================================================================== #
     features_list = []
