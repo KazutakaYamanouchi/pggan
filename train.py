@@ -52,6 +52,14 @@ def imagefolder_loader(path):
     return loader
 
 
+def evaluate_loader(path):
+    def loader(transform):
+        data = datasets.ImageFolder(path, transform=transform)
+        data_loader = DataLoader(data, shuffle=False, batch_size=batch_size,
+                                 num_workers=4, drop_last=False)
+        return data_loader
+    return loader
+
 """""
 transforms.Resize(image_size+int(image_size*0.2)+1),
 transforms.RandomCrop(image_size),
@@ -65,6 +73,15 @@ def sample_data(dataloader, image_size=4):
         transforms.Resize(image_size),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    loader = dataloader(transform)
+    return loader
+
+
+def evaluate_data(dataloader):
+    transform = transforms.Compose([
+        transforms.CenterCrop(4 * 2 ** args.max_step),
+        transforms.ToTensor()
     ])
     loader = dataloader(transform)
     return loader
@@ -271,6 +288,8 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
             # pbar.set_description(state_msg)
 
     # Start evaluating
+    loader = evaluate_loader(args.path)
+    data_loader = evaluate_data(loader)
     evaluate_file = open(evaluate_file_name, mode='w', encoding='utf-8')
     if device != 'cpu':
         prop = torch.cuda.get_device_properties(device)
@@ -310,6 +329,7 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
         train_features = np.load(features_path)['features']
         train_logits = np.load(logits_path)['logits']
         train_labels = np.load(labels_path)['labels']
+        print('データセットの特徴をロードしました。')
     else:
         features_list = []
         logits_list = []
@@ -353,7 +373,7 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
         begin_time = perf_counter()
         for _ in pbar:
             z = torch.randn(b_size, input_code_size).to(device)
-            fakes = generator(z)
+            fakes = generator(z, step=step, alpha=alpha)
         end_time = perf_counter()
     s = f'画像生成時間: {(end_time - begin_time) / 10000:.07f}[s/image]'
     print(s)

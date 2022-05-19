@@ -1,174 +1,69 @@
-# 標準モジュール
+from tqdm import tqdm
+import numpy as np
+from PIL import Image
 import argparse
-from datetime import datetime
-from logging import (
-    getLogger, basicConfig,
-    DEBUG, INFO, WARNING
-)
-from math import ceil
-from pathlib import Path
 import random
+from pathlib import Path
+from math import ceil
 from time import perf_counter
 from typing import Tuple
-import sys
 
-# 追加モジュール
-import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.parallel
-import torch.utils.data
+import torch.nn.functional as F
+from torch import nn, optim
+from torch.autograd import Variable, grad
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms, utils
 from torchvision.models import inception_v3
-import torchvision.transforms as transforms
-from tqdm import tqdm
 
-# 自作モジュール
-from utils.datasets import load_dataset
+from progan_modules import Generator, Discriminator
 from utils.evaluation import imagenet2012_normalize, inception_score, fid
 from utils.device import AutoDevice
-from progan_modules import Generator
+import utils.dwt as dwt
+import utils.dct as dct
 
 
-DATASETS_ROOT = './image_root_folder/celeba/img_align_celeba'
-# =========================================================================== #
-# コマンドライン引数の設定
-# =========================================================================== #
-parser = argparse.ArgumentParser(
-    prog='PyTorch Generative Adversarial Network',
-    description='PyTorchを用いてGANの画像生成を行います。'
-)
-
-# 訓練に関する引数
-
-parser.add_argument(
-    '-lg', '--load_generator', help='指定したパスのGeneratorのセーブファイルを読み込みます。',
-    type=str, default=None
-)
-
-parser.add_argument(
-    '-b', '--batch-size', help='バッチサイズを指定します。',
-    type=int, default=4, metavar='B'
-)
-
-# PyTorchに関するコマンドライン引数
-parser.add_argument(
-    '--seed', help='乱数生成器のシード値を指定します。',
-    type=int, default=999
-)
-
-parser.add_argument('--gpu_id', type=int, default=0, help='0 is the first gpu, 1 is the second gpu, etc.')
-
-parser.add_argument('--z_dim', type=int, default=128, help='the initial latent vector\'s dimension, can be smaller such as 64, if the dataset is not diverse')
-parser.add_argument('--channel', type=int, default=128, help='determines how big the model is, smaller value means faster training, but less capacity of the model')
-parser.add_argument('--batch_size', type=int, default=4, help='how many images to train together at one iteration')
-parser.add_argument('--n_critic', type=int, default=1, help='train Dhow many times while train G 1 time')
-
-parser.add_argument(
-    '--data-path', help='データセットのパスを指定します。',
-    type=str, default=DATASETS_ROOT
-)
-
-parser.add_argument(
-    '--info', help='ログ表示レベルをINFOに設定し、詳細なログを表示します。',
-    action='store_true'
-)
-parser.add_argument(
-    '--debug', help='ログ表示レベルをDEBUGに設定し、より詳細なログを表示します。',
-    action='store_true'
-)
-# コマンドライン引数をパースする
-args = parser.parse_args()
-
-# 結果を出力するために起動日時を保持する
-launch_datetime = datetime.now()
-
-# ロギングの設定
-basicConfig(
-    format='%(asctime)s %(name)s %(funcName)s %(levelname)s: %(message)s',
-    datefmt='%Y/%m/%d %H:%M:%S',
-    level=DEBUG if args.debug else INFO if args.info else WARNING,
-)
-# 名前を指定してロガーを取得する
-logger = getLogger('main')
-
-generator_path = Path(args.load_generator)
-generator_dir = generator_path.parent
-input_code_size = args.z_dim
-batch_size = args.batch_size
-n_critic = args.n_critic
-
-device = torch.device("cuda:%d"%(args.gpu_id))
-
-# Generator生成
-generator = Generator(in_channel=args.channel, input_code_dim=input_code_size, pixel_norm=args.pixel_norm, tanh=args.tanh).to(device)
-g_running = Generator(in_channel=args.channel, input_code_dim=input_code_size, pixel_norm=args.pixel_norm, tanh=args.tanh).to(device)
-
-# チェックポイントの読み込み
-if args.load_generator is not None:
-    generator.load_state_dict(torch.load(generator_path))
-    g_running.load_state_dict(torch.load(generator_path))
-else:
-    print("No checkpoint")
-    exit
-
-idx = 1
-output_path = generator_dir.joinpath(f'evaluation{idx}.txt')
-while output_path.exists():
-    idx += 1
-    output_path = generator_dir.joinpath(f'evaluation{idx}.txt')
-output_txt = open(output_path, mode='w', encoding='utf-8')
+def torch_fix_seed(seed=42):
+    # Python random
+    random.seed(seed)
+    # Numpy
+    np.random.seed(seed)
+    # Pytorch
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms = False
 
 
-# =========================================================================== #
-# 再現性の設定 https://pytorch.org/docs/stable/notes/randomness.html
-# =========================================================================== #
-random.seed(args.seed)                     # Pythonの乱数生成器のシード値の設定
-np.random.seed(args.seed)                  # NumPyの乱数生成器のシード値の設定
-torch.manual_seed(args.seed)               # PyTorchの乱数生成器のシード値の設定
-torch.backends.cudnn.deterministic = True  # Pytorchの決定性モードの有効化
-torch.backends.cudnn.benchmark = False     # Pytorchのベンチマークモードの無効化
-logger.info('乱数生成器のシード値を設定しました。')
-output_txt.write(f'乱数生成器のシード値: {args.seed}\n')
+def accumulate(model1, model2, decay=0.999):
+    par1 = dict(model1.named_parameters())
+    par2 = dict(model2.named_parameters())
 
-# デバイスについての補助クラスをインスタンス化
-auto_device = AutoDevice(disable_cuda=args.disable_cuda)
-logger.info('デバイスの優先順位を計算しました。')
-device = auto_device()
-logger.info(f'メインデバイスとして〈{device}〉が選択されました。')
-if device != 'cpu':
-    prop = torch.cuda.get_device_properties(device)
-    output_txt.write(
-        f'使用デバイス: {prop.name}\n'
-        f'  メモリ容量: {prop.total_memory // 1048576}[MiB]\n'
-        f'  Compute Capability: {prop.major}.{prop.minor}\n'
-        f'  ストリーミングマルチプロセッサ数: {prop.multi_processor_count}[個]\n'
-    )
-else:
-    output_txt.write('使用デバイス: CPU\n')
+    for k in par1.keys():
+        par1[k].data.mul_(decay).add_(1 - decay, par2[k].data)
 
 
-# =========================================================================== #
-# モデルの読み込み
-# =========================================================================== #
-model_g = Generator(
-    nz=nz, nc=nc)
-model_g = model_g.to(device)
-model_g.eval()
-model_g.load_state_dict(state_dict)
+def evaluate_loader(path):
+    def loader(transform):
+        data = datasets.ImageFolder(path, transform=transform)
+        data_loader = DataLoader(data, shuffle=False, batch_size=batch_size,
+                                 num_workers=4, drop_last=False)
+        return data_loader
+    return loader
 
-# ImageNet2012訓練済みInception V3を読み込む
-inception = inception_v3(pretrained=True, aux_logits=False)
-inception_children = list(inception.children())
-# 特徴抽出器(FIDで使用)
-feature_extractor = nn.Sequential(*inception_children[:-2]).to(device)
-feature_extractor.eval()
-# クラス分類器(Inception Scoreで使用)
-classifier = nn.Sequential(
-    inception_children[-1], nn.Softmax(dim=1)).to(device)
-classifier.eval()
+"""""
+transforms.Resize(image_size+int(image_size*0.2)+1),
+transforms.RandomCrop(image_size),
+transforms.RandomHorizontalFlip(),
+"""""
 
-# Inception V3の入力(299×299)のための画像拡大モジュール
-upsample = nn.UpsamplingBilinear2d((299, 299))
+def evaluate_data(dataloader):
+    transform = transforms.Compose([
+        transforms.CenterCrop(4 * 2 ** args.max_step),
+        transforms.ToTensor()
+    ])
+    loader = dataloader(transform)
+    return loader
 
 
 def preprocess(images: torch.Tensor) -> torch.Tensor:
@@ -180,6 +75,8 @@ def preprocess(images: torch.Tensor) -> torch.Tensor:
     Returns:
         前処理済みの画像バッチ(B, C, 299, 299)
     '''
+    # Inception V3の入力(299×299)のための画像拡大モジュール
+    upsample = nn.UpsamplingBilinear2d((299, 299))
     if images.size(1) == 1:
         images = images.repeat(1, 3, 1, 1)
     images = imagenet2012_normalize(images, inplace=True)
@@ -187,7 +84,7 @@ def preprocess(images: torch.Tensor) -> torch.Tensor:
     return images
 
 
-def inception_forward(images: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
+def inception_forward(images: torch.Tensor, feature_extractor, classifier) -> Tuple[np.ndarray, np.ndarray]:
     '''FID Inception Scoreの算出に必要な計算結果を取得する。
 
     Args:
@@ -201,131 +98,181 @@ def inception_forward(images: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
     return features.cpu().numpy(), logits.cpu().numpy()
 
 
-# =========================================================================== #
-# キャッシュの読み込み／訓練画像の評価
-# =========================================================================== #
-if nc == 1 and checkpoint['dataset'] in ['cifar10', 'stl10']:
-    suffix = '_grayscale'
-else:
-    suffix = ''
-assets_root = Path('./assets')
-assets_dir = assets_root.joinpath(checkpoint['dataset'] + suffix)
-features_path = assets_dir.joinpath('features.npz')
-logits_path = assets_dir.joinpath('logits.npz')
-labels_path = assets_dir.joinpath('labels.npz')
-if (
-    assets_dir.exists() and assets_dir.is_dir() and
-    features_path.exists() and features_path.is_file() and
-    logits_path.exists() and logits_path.is_file() and
-    labels_path.exists() and labels_path.is_file()
-):
-    # 既に計算された結果がある場合は読み込み
-    train_features = np.load(features_path)['features']
-    train_logits = np.load(logits_path)['logits']
-    train_labels = np.load(labels_path)['labels']
-else:  # 無い場合は計算してその結果を保存
-    # ======================================================================= #
-    # データ整形
-    # ======================================================================= #
-    logger.info('画像に適用する変換のリストを定義します。')
-    data_transforms = []
+def train(generator):
+    torch_fix_seed(args.seed)
 
-    if checkpoint['dataset'] in ['mnist', 'fashion_mnist']:
-        # MNIST/Fashion MNISTは28×28画素なのでゼロパディング
-        data_transforms.append(
-            transforms.Pad(2, fill=0, padding_mode='constant')
+    from datetime import datetime
+    import os
+    date_time = datetime.now()
+    post_fix = '%s_%s_%d_%d.txt' % (trial_name, date_time.date(), date_time.hour, date_time.minute)
+    log_folder = 'eval_%s_%s_%d_%d' % (trial_name, date_time.date(), date_time.hour, date_time.minute)
+
+    os.mkdir(log_folder)
+    os.mkdir(log_folder + '/sample')
+
+    config_file_name = os.path.join(log_folder, 'train_config_' + post_fix)
+    config_file = open(config_file_name, mode='w', encoding='utf-8')
+    config_file.write(str(args))
+    config_file.close()
+
+    evaluate_file_name = os.path.join(log_folder, 'evaluate_' + post_fix)
+    evaluate_file = open(evaluate_file_name, mode='w', encoding='utf-8')
+    evaluate_file.write(f'乱数生成器のシード値: {args.seed}\n')
+    evaluate_file.close()
+
+    from shutil import copy
+    copy('train.py', log_folder + '/train_%s.py' % post_fix)
+    copy('progan_modules.py', log_folder + '/model_%s.py' % post_fix)
+
+    with torch.no_grad():
+        for i in range(10):
+            images = generator(torch.randn(1 * 1, input_code_size).to(device), step=args.max_step, alpha=1).data.cpu()
+
+            utils.save_image(
+                images,
+                f'{log_folder}/sample/{str(i + 1).zfill(2)}.png',
+                nrow=1,
+                normalize=True,
+                range=(-1, 1))
+
+    # Start evaluating
+    loader = evaluate_loader(args.path)
+    data_loader = evaluate_data(loader)
+    evaluate_file = open(evaluate_file_name, mode='w', encoding='utf-8')
+    if device != 'cpu':
+        prop = torch.cuda.get_device_properties(device)
+        evaluate_file.write(
+            f'使用デバイス: {prop.name}\n'
+            f'  メモリ容量: {prop.total_memory // 1048576}[MiB]\n'
+            f'  Compute Capability: {prop.major}.{prop.minor}\n'
+            f'  ストリーミングマルチプロセッサ数: {prop.multi_processor_count}[個]\n'
         )
-        logger.info('変換リストにゼロパディングを追加しました。')
+    else:
+        evaluate_file.write('使用デバイス: CPU\n')
 
-    if nc == 1 and checkpoint['dataset'] in ['cifar10', 'stl10']:
-        data_transforms.append(
-            transforms.Grayscale(num_output_channels=1)
-        )
-        logger.info('変換リストにグレースケール化を追加しました。')
+    generator.eval()
+    # ImageNet2012訓練済みInception V3を読み込む
+    inception = inception_v3(pretrained=True, aux_logits=False)
+    inception_children = list(inception.children())
+    # 特徴抽出器(FIDで使用)
+    feature_extractor = nn.Sequential(*inception_children[:-2]).to(device)
+    feature_extractor.eval()
+    # クラス分類器(Inception Scoreで使用)
+    classifier = nn.Sequential(
+        inception_children[-1], nn.Softmax(dim=1)).to(device)
+    classifier.eval()
 
-    data_transforms.append(transforms.ToTensor())
-    logger.info('変換リストにテンソル化を追加しました。')
-    # ======================================================================= #
-    # データセットの読み込み／データローダーの定義
-    # ======================================================================= #
-    dataset = load_dataset(
-        checkpoint['dataset'], root=args.data_path, transform=data_transforms)
-    logger.info(f"データセット〈{checkpoint['dataset']}〉を読み込みました。")
+    assets_root = Path('./assets')
+    assets_dir = assets_root.joinpath('./celeba')
+    features_path = assets_dir.joinpath('features.npz')
+    logits_path = assets_dir.joinpath('logits.npz')
+    labels_path = assets_dir.joinpath('labels.npz')
+    if (
+        assets_dir.exists() and assets_dir.is_dir() and
+        features_path.exists() and features_path.is_file() and
+        logits_path.exists() and logits_path.is_file() and
+        labels_path.exists() and labels_path.is_file()
+    ):
+        # 既に計算された結果がある場合は読み込み
+        train_features = np.load(features_path)['features']
+        train_logits = np.load(logits_path)['logits']
+        train_labels = np.load(labels_path)['labels']
+    else:
+        features_list = []
+        logits_list = []
+        labels_list = []
+        dataset = iter(data_loader)
+        pbar = tqdm(
+            enumerate(dataset),
+            desc='データセット画像から特徴を抽出中...',
+            total=len(dataset),
+            leave=False)
+        for i, (images, labels) in pbar:
+            with torch.no_grad():
+                images = preprocess(images)
+                images = images.to(device)
+                features, logits = inception_forward(images, feature_extractor, classifier)
+                features_list.append(features)
+                logits_list.append(logits)
+                labels_list.append(labels)
+        train_features = np.concatenate(features_list, axis=0)
+        train_logits = np.concatenate(logits_list, axis=0)
+        train_labels = np.concatenate(labels_list, axis=0)
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            assets_dir.joinpath('features.npz'), features=train_features)
+        np.savez_compressed(
+            assets_dir.joinpath('logits.npz'), logits=train_logits)
+        np.savez_compressed(
+            assets_dir.joinpath('labels.npz'), labels=train_labels)
+        with open(
+            assets_dir.joinpath('evaluation.txt'), mode='w', encoding='utf-8'
+        ) as f:
+            f.write(f'画像数: {train_labels.shape[0]}\n')
+            f.write(f'Inception Score: {inception_score(train_logits)}\n')
+        print(f'{assets_dir}にデータセット画像の評価を保存しました。')
 
-    dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=batch_size,
-        shuffle=False, drop_last=False)
-    logger.info('データローダを生成しました。')
-
+    # =========================================================================== #
+    # 生成画像の評価
+    # =========================================================================== #
     features_list = []
     logits_list = []
-    labels_list = []
-    pbar = tqdm(
-        enumerate(dataloader),
-        desc='データセット画像から特徴を抽出中...',
-        total=ceil(len(dataset) / batch_size),
-        leave=False)
-    for i, (images, labels) in pbar:
-        with torch.no_grad():
+    with torch.no_grad():
+        for i in range(ceil(50000 / batch_size)):
+            z = torch.randn(batch_size, input_code_size).to(device)
+            images = generator(z, step=args.max_step, alpha=1)
             images = preprocess(images)
-            images = images.to(device)
-            features, logits = inception_forward(images)
+            features, logits = inception_forward(images, feature_extractor, classifier)
             features_list.append(features)
             logits_list.append(logits)
-            labels_list.append(labels)
-    logger.info('特徴抽出終了。')
-    train_features = np.concatenate(features_list, axis=0)
-    train_logits = np.concatenate(logits_list, axis=0)
-    train_labels = np.concatenate(labels_list, axis=0)
-    assets_dir.mkdir(parents=True, exist_ok=True)
-    logger.info('ディレクトリ作成。')
-    np.savez_compressed(
-        assets_dir.joinpath('features.npz'), features=train_features)
-    np.savez_compressed(
-        assets_dir.joinpath('logits.npz'), logits=train_logits)
-    np.savez_compressed(
-        assets_dir.joinpath('labels.npz'), labels=train_labels)
-    with open(
-        assets_dir.joinpath('evaluation.txt'), mode='w', encoding='utf-8'
-    ) as f:
-        f.write(f'画像数: {train_labels.shape[0]}\n')
-        f.write(f'Inception Score: {inception_score(train_logits)}\n')
-    print(f'{assets_dir}にデータセット画像の評価を保存しました。')
+    features = np.concatenate(features_list, axis=0)
+    logits = np.concatenate(logits_list, axis=0)
+    s = f'Inception Score: {inception_score(logits)}'
+    print(s)
+    evaluate_file.write(f'{s}\n')
+    s = f'FID: {fid(features, train_features)}'
+    print(s)
+    evaluate_file.write(f'{s}\n')
+    evaluate_file.close()
 
-# =========================================================================== #
-# 画像生成時間の計測
-# =========================================================================== #
-pbar = tqdm(range(10000), desc='画像生成時間を計測中...', total=10000, leave=False)
-with torch.no_grad():
-    begin_time = perf_counter()
-    for _ in pbar:
-        z = torch.randn(1, nz, device=device)
-        fakes = model_g(z)
-    end_time = perf_counter()
-s = f'画像生成時間: {(end_time - begin_time) / 10000:.07f}[s/image]'
-print(s)
-output_txt.write(f'{s}\n')
 
-# =========================================================================== #
-# 生成画像の評価
-# =========================================================================== #
-features_list = []
-logits_list = []
-with torch.no_grad():
-    for i in range(ceil(50000 / batch_size)):
-        z = torch.randn(batch_size, nz, device=device)
-        images = model_g(z)
-        images = (images + 1.0) / 2  # -1.0 ~ 1.0 -> 0.0 ~ 1.0
-        images = preprocess(images)
-        features, logits = inception_forward(images)
-        features_list.append(features)
-        logits_list.append(logits)
-features = np.concatenate(features_list, axis=0)
-logits = np.concatenate(logits_list, axis=0)
-s = f'Inception Score: {inception_score(logits)}'
-print(s)
-output_txt.write(f'{s}\n')
-s = f'FID: {fid(features, train_features)}'
-print(s)
-output_txt.write(f'{s}\n')
-output_txt.close()
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description='Progressive GAN, during training, the model will learn to generate  images from a low resolution, then progressively getting high resolution ')
+
+    parser.add_argument('--path', type=str, default="./image_root_folder/celeba", help='path of specified dataset, should be a folder that has one or many sub image folders inside')
+    parser.add_argument('--lg', type=str, default=None, help='load generator path')
+    parser.add_argument('--trial_name', type=str, default="test1", help='a brief description of the training trial')
+    parser.add_argument('--gpu_id', type=int, default=0, help='0 is the first gpu, 1 is the second gpu, etc.')
+    parser.add_argument('--seed', type=int, default=42, help='random seed.')
+    parser.add_argument('--lr', type=float, default=0.001, help='learning rate, default is 1e-3, usually dont need to change it, you can try make it bigger, such as 2e-3')
+    parser.add_argument('--z_dim', type=int, default=128, help='the initial latent vector\'s dimension, can be smaller such as 64, if the dataset is not diverse')
+    parser.add_argument('--channel', type=int, default=128, help='determines how big the model is, smaller value means faster training, but less capacity of the model')
+    parser.add_argument('--batch_size', type=int, default=4, help='how many images to train together at one iteration')
+    parser.add_argument('--n_critic', type=int, default=1, help='train Dhow many times while train G 1 time')
+    parser.add_argument('--init_step', type=int, default=1, help='start from what resolution, 1 means 8x8 resolution, 2 means 16x16 resolution, ..., 6 means 256x256 resolution')
+    parser.add_argument('--max_step', type=int, default=5, help='max resolution, 1 means 8x8 resolution, 2 means 16x16 resolution, ..., 6 means 256x256 resolution')
+    parser.add_argument('--total_iter', type=int, default=300000, help='how many iterations to train in total, the value is in assumption that init step is 1')
+    parser.add_argument('--pixel_norm', default=False, action="store_true", help='a normalization method inside the model, you can try use it or not depends on the dataset')
+    parser.add_argument('--tanh', default=False, action="store_true", help='an output non-linearity on the output of Generator, you can try use it or not depends on the dataset')
+    parser.add_argument('--dct', default=False, action="store_true", help='use disccrete cosine transform')
+    parser.add_argument('--dwt', default=False, action="store_true", help='use discrete wavelete transform')
+
+    args = parser.parse_args()
+
+    print(str(args))
+
+    trial_name = args.trial_name
+    device = torch.device("cuda:%d"%(args.gpu_id))
+    input_code_size = args.z_dim
+    batch_size = args.batch_size
+    n_critic = args.n_critic
+    seed = args.seed
+
+    generator = Generator(in_channel=args.channel, input_code_dim=input_code_size, pixel_norm=args.pixel_norm, tanh=args.tanh).to(device)
+
+    # you can directly load a pretrained model here
+    # g_running.load_state_dict(torch.load('checkpoint/150000_g.model'))
+    generator.load_state_dict(torch.load(args.lg))
+
+    train(generator)
