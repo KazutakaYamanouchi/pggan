@@ -217,6 +217,7 @@ def train(generator):
     # =========================================================================== #
     features_list = []
     logits_list = []
+    torch_fix_seed(args.seed)
     with torch.no_grad():
         for i in range(ceil(50000 / batch_size)):
             z = torch.randn(batch_size, input_code_size).to(device)

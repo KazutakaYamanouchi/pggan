@@ -32,7 +32,7 @@ def torch_fix_seed(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
-    torch.use_deterministic_algorithms = False
+    torch.backends.cudnn.benchmark = False     # Pytorchのベンチマークモードの無効化
 
 
 def accumulate(model1, model2, decay=0.999):
@@ -44,15 +44,6 @@ def accumulate(model1, model2, decay=0.999):
 
 
 def imagefolder_loader(path):
-    def loader(transform):
-        data = datasets.ImageFolder(path, transform=transform)
-        data_loader = DataLoader(data, shuffle=True, batch_size=batch_size,
-                                 num_workers=4)
-        return data_loader
-    return loader
-
-
-def evaluate_loader(path):
     def loader(transform):
         data = datasets.ImageFolder(path, transform=transform)
         data_loader = DataLoader(data, shuffle=False, batch_size=batch_size,
@@ -286,9 +277,12 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
 
             print(state_msg)
             # pbar.set_description(state_msg)
-
+    torch.save(g_running.state_dict(), f'{log_folder}/checkpoint/{str(i + 1).zfill(6)}_g.model')
+    torch.save(discriminator.state_dict(), f'{log_folder}/checkpoint/{str(i + 1).zfill(6)}_d.model')
+    print('訓練終了')
+    print('評価開始')
     # Start evaluating
-    loader = evaluate_loader(args.path)
+    loader = imagefolder_loader(args.path)
     data_loader = evaluate_data(loader)
     evaluate_file = open(evaluate_file_name, mode='w', encoding='utf-8')
     if device != 'cpu':
@@ -370,10 +364,12 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
     # =========================================================================== #
     features_list = []
     logits_list = []
+    torch_fix_seed(args.seed)
+    print(alpha)
     with torch.no_grad():
         for i in range(ceil(50000 / batch_size)):
             z = torch.randn(b_size, input_code_size).to(device)
-            images = generator(z, step=args.max_step, alpha=alpha)
+            images = g_running(z, step=args.max_step, alpha=alpha)
             images = preprocess(images)
             features, logits = inception_forward(images, feature_extractor, classifier)
             features_list.append(features)
@@ -386,6 +382,7 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
     s = f'FID: {fid(features, train_features)}'
     print(s)
     evaluate_file.write(f'{s}\n')
+
     evaluate_file.close()
 
 
