@@ -24,14 +24,10 @@ import utils.dct as dct
 
 
 def torch_fix_seed(seed=42):
-    # Python random
-    random.seed(seed)
-    # Numpy
-    np.random.seed(seed)
-    # Pytorch
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
+    random.seed(seed)                     # Pythonの乱数生成器のシード値の設定
+    np.random.seed(seed)                  # NumPyの乱数生成器のシード値の設定
+    torch.manual_seed(seed)               # PyTorchの乱数生成器のシード値の設定
+    torch.backends.cudnn.deterministic = True  # Pytorchの決定性モードの有効化
     torch.backends.cudnn.benchmark = False     # Pytorchのベンチマークモードの無効化
 
 
@@ -365,7 +361,6 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
     features_list = []
     logits_list = []
     torch_fix_seed(args.seed)
-    print(alpha)
     with torch.no_grad():
         for i in range(ceil(50000 / batch_size)):
             z = torch.randn(b_size, input_code_size).to(device)
@@ -412,12 +407,17 @@ if __name__ == '__main__':
     print(str(args))
 
     trial_name = args.trial_name
-    device = torch.device("cuda:%d"%(args.gpu_id))
+    # device = torch.device("cuda:%d"%(args.gpu_id))
     input_code_size = args.z_dim
     batch_size = args.batch_size
     n_critic = args.n_critic
     seed = args.seed
 
+    torch_fix_seed(args.seed)
+
+    # デバイスについての補助クラスをインスタンス化
+    auto_device = AutoDevice(disable_cuda=False)
+    device = auto_device()
     generator = Generator(in_channel=args.channel, input_code_dim=input_code_size, pixel_norm=args.pixel_norm, tanh=args.tanh).to(device)
     discriminator = Discriminator(feat_dim=args.channel).to(device)
     g_running = Generator(in_channel=args.channel, input_code_dim=input_code_size, pixel_norm=args.pixel_norm, tanh=args.tanh).to(device)
@@ -429,8 +429,9 @@ if __name__ == '__main__':
 
     g_running.train(False)
 
-    g_optimizer = optim.Adam(generator.parameters(), lr=args.lr, betas=(0.0, 0.99))
-    d_optimizer = optim.Adam(discriminator.parameters(), lr=args.lr, betas=(0.0, 0.99))
+    g_optimizer = optim.Adam(generator.parameters(), lr=0.001, betas=(0.0, 0.99))
+
+    d_optimizer = optim.Adam(discriminator.parameters(), lr=0.001, betas=(0.0, 0.99))
 
     accumulate(g_running, generator, 0)
 

@@ -5,6 +5,14 @@ from torch.nn import functional as F
 from math import sqrt
 
 
+def init_xavier_uniform(layer):
+    if isinstance(layer, (nn.Conv2d, nn.ConvTranspose2d)):
+        if hasattr(layer, "weight_orig"):
+            torch.nn.init.xavier_uniform_(layer.weight_orig)
+        if hasattr(layer, "bias"):
+            if hasattr(layer.bias, "data"):
+                layer.bias.data.fill_(0)
+
 class EqualLR:
     def __init__(self, name):
         self.name = name
@@ -54,6 +62,7 @@ class EqualConv2d(nn.Module):
         conv.weight.data.normal_()
         conv.bias.data.zero_()
         self.conv = equal_lr(conv)
+        self.conv.apply(init_xavier_uniform)  # 重みの初期化
 
     def forward(self, input):
         return self.conv(input)
@@ -68,6 +77,8 @@ class EqualConvTranspose2d(nn.Module):
         conv.weight.data.normal_()
         conv.bias.data.zero_()
         self.conv = equal_lr(conv)
+
+        self.conv.apply(init_xavier_uniform)  # 重みの初期化
 
     def forward(self, input):
         return self.conv(input)
