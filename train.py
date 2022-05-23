@@ -240,7 +240,7 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
             g_optimizer.step()
             accumulate(g_running, generator)
 
-        if (i + 1) % 1000 == 0 or i == 0:
+        if (i + 1) % 10000 == 0 or i == 0:
             with torch.no_grad():
                 images = g_running(torch.randn(5 * 10, input_code_size).to(device), step=step, alpha=alpha).data.cpu()
 
@@ -251,7 +251,7 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
                     normalize=True,
                     range=(-1, 1))
 
-        if (i + 1) % 10000 == 0 or i == 0:
+        if (i + 1) % 100000 == 0 or i == 0:
             try:
                 torch.save(g_running.state_dict(), f'{log_folder}/checkpoint/{str(i + 1).zfill(6)}_g.model')
                 torch.save(discriminator.state_dict(), f'{log_folder}/checkpoint/{str(i + 1).zfill(6)}_d.model')
