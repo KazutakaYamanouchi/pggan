@@ -114,7 +114,8 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
     dataset = iter(data_loader)
 
     # total_iter = 600000
-    total_iter_remain = total_iter - (total_iter // args.max_step) * (step - 1)
+    layer_iter = total_iter // args.max_step
+    total_iter_remain = total_iter - layer_iter * (step - 1)
 
     pbar = tqdm(range(total_iter_remain))
 
@@ -161,9 +162,9 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
     for i in pbar:
         discriminator.zero_grad()
 
-        alpha = min(1, (2 / (total_iter // args.max_step)) * iteration)
+        alpha = min(1, (2 / layer_iter) * iteration)
 
-        if iteration > total_iter // args.max_step:
+        if iteration > layer_iter:
             alpha = 0
             iteration = 0
             step += 1
@@ -181,11 +182,18 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
             dataset = iter(data_loader)
             real_image, label = next(dataset)
 
-        half_flag = 0
-        if iteration * 2 > total_iter // args.max_step:
-            half_flag = 1
+        dct_flag = 2
+        if iteration % (layer_iter) / layer_iter > 0.125:
+            dct_flag = 3
+        if iteration % (layer_iter) / layer_iter > 0.25:
+            dct_flag = 4
+        if iteration % (layer_iter) / layer_iter > 0.375:
+            dct_flag = 5
+        if iteration % (layer_iter) / layer_iter > 0.5:
+            dct_flag = 8
+
         if args.dct and step > 2:
-            wavelet = dct.DCT(half_flag)
+            wavelet = dct.DCT(dct_flag)
             wavelet = wavelet.to(device)
         elif args.dwt and step > 2:
             wavelet = dwt.DWT()
@@ -196,7 +204,7 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
         real_image = real_image.to(device)
         label = label.to(device)
         if (args.dct or args.dwt) and step > 2:
-            real_image = wavelet(real_image, half_flag)
+            real_image = wavelet(real_image, dct_flag)
 
         real_predict = discriminator(
             real_image, step=step, alpha=alpha)
@@ -270,8 +278,6 @@ def train(generator, discriminator, init_step, loader, total_iter=600000):
             disc_loss_val = 0
             gen_loss_val = 0
             grad_loss_val = 0
-
-            print(state_msg)
             # pbar.set_description(state_msg)
     torch.save(g_running.state_dict(), f'{log_folder}/checkpoint/{str(i + 1).zfill(6)}_g.model')
     torch.save(discriminator.state_dict(), f'{log_folder}/checkpoint/{str(i + 1).zfill(6)}_d.model')

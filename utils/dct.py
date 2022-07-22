@@ -135,9 +135,11 @@ class DCT(nn.Module):
         self.encoder = JPEGEncoder()
         self.decoder = JPEGDecoder()
         lpf = torch.zeros(8, 8, device='cuda')
+        """
         lpf_list = [2, 8]
         lpf_ratio = lpf_list[k]
-        lpf[:lpf_ratio, :lpf_ratio] = 1
+        """
+        lpf[:k, :k] = 1
         lpf_shift = torch.flatten(lpf)
         self.y_lpf = lpf_shift.reshape(64, 1, 1)
         self.y_lpf.requires_grad = False
