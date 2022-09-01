@@ -56,7 +56,7 @@ transforms.RandomHorizontalFlip(),
 
 def sample_data(dataloader, image_size=4):
     transform = transforms.Compose([
-        transforms.CenterCrop(4 * 2 ** args.max_step),
+        transforms.CenterCrop(4 * 2 ** 5),
         transforms.Resize(image_size),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
@@ -67,7 +67,8 @@ def sample_data(dataloader, image_size=4):
 
 def evaluate_data(dataloader):
     transform = transforms.Compose([
-        transforms.CenterCrop(4 * 2 ** args.max_step),
+        transforms.CenterCrop(4 * 2 ** 5),
+        transforms.Resize(4 * 2 ** args.max_step),
         transforms.ToTensor()
     ])
     loader = dataloader(transform)
