@@ -4,6 +4,8 @@ image_root_folder
 .venv
 __pycache__
 assets
+_cache_homekyamanouchidatasetsvisionbedroomtrainlmdb
+_cache_homekyamanouchidatasetsvisionclassroomtrainlmdb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

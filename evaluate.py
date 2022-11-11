@@ -21,6 +21,7 @@ from utils.evaluation import imagenet2012_normalize, inception_score, fid
 from utils.device import AutoDevice
 import utils.dwt as dwt
 import utils.dct as dct
+import torchvision.datasets as dset
 
 
 def torch_fix_seed(seed=42):
@@ -43,23 +44,22 @@ def accumulate(model1, model2, decay=0.999):
         par1[k].data.mul_(decay).add_(1 - decay, par2[k].data)
 
 
-def evaluate_loader(path):
+def imagefolder_loader(path):
     def loader(transform):
-        data = datasets.ImageFolder(path, transform=transform)
+        data = dset.LSUN(
+            root='/home/k_yamanouchi/.datasets/vision',
+            classes=['bedroom_train'],
+            transform=transform)
         data_loader = DataLoader(data, shuffle=False, batch_size=batch_size,
-                                 num_workers=4, drop_last=False)
+                                 num_workers=0, drop_last=False)
         return data_loader
     return loader
 
-"""""
-transforms.Resize(image_size+int(image_size*0.2)+1),
-transforms.RandomCrop(image_size),
-transforms.RandomHorizontalFlip(),
-"""""
 
 def evaluate_data(dataloader):
     transform = transforms.Compose([
-        transforms.CenterCrop(4 * 2 ** args.max_step),
+        transforms.CenterCrop(4 * 2 ** 6),
+        transforms.Resize(4 * 2 ** args.max_step),
         transforms.ToTensor()
     ])
     loader = dataloader(transform)
@@ -136,7 +136,7 @@ def train(generator):
                 range=(-1, 1))
 
     # Start evaluating
-    loader = evaluate_loader(args.path)
+    loader = imagefolder_loader(args.path)
     data_loader = evaluate_data(loader)
     evaluate_file = open(evaluate_file_name, mode='w', encoding='utf-8')
     if device != 'cpu':
@@ -163,7 +163,7 @@ def train(generator):
     classifier.eval()
 
     assets_root = Path('./assets')
-    assets_dir = assets_root.joinpath('./celeba')
+    assets_dir = assets_root.joinpath('./lsun-bedroom')
     features_path = assets_dir.joinpath('features.npz')
     logits_path = assets_dir.joinpath('logits.npz')
     labels_path = assets_dir.joinpath('labels.npz')
@@ -174,6 +174,7 @@ def train(generator):
         labels_path.exists() and labels_path.is_file()
     ):
         # 既に計算された結果がある場合は読み込み
+        print("loaded")
         train_features = np.load(features_path)['features']
         train_logits = np.load(logits_path)['logits']
         train_labels = np.load(labels_path)['labels']
@@ -188,6 +189,7 @@ def train(generator):
             total=len(dataset),
             leave=False)
         for i, (images, labels) in pbar:
+            pass
             with torch.no_grad():
                 images = preprocess(images)
                 images = images.to(device)
@@ -249,10 +251,10 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate, default is 1e-3, usually dont need to change it, you can try make it bigger, such as 2e-3')
     parser.add_argument('--z_dim', type=int, default=128, help='the initial latent vector\'s dimension, can be smaller such as 64, if the dataset is not diverse')
     parser.add_argument('--channel', type=int, default=128, help='determines how big the model is, smaller value means faster training, but less capacity of the model')
-    parser.add_argument('--batch_size', type=int, default=4, help='how many images to train together at one iteration')
+    parser.add_argument('--batch_size', type=int, default=8, help='how many images to train together at one iteration')
     parser.add_argument('--n_critic', type=int, default=1, help='train Dhow many times while train G 1 time')
     parser.add_argument('--init_step', type=int, default=1, help='start from what resolution, 1 means 8x8 resolution, 2 means 16x16 resolution, ..., 6 means 256x256 resolution')
-    parser.add_argument('--max_step', type=int, default=5, help='max resolution, 1 means 8x8 resolution, 2 means 16x16 resolution, ..., 6 means 256x256 resolution')
+    parser.add_argument('--max_step', type=int, default=6, help='max resolution, 1 means 8x8 resolution, 2 means 16x16 resolution, ..., 6 means 256x256 resolution')
     parser.add_argument('--total_iter', type=int, default=300000, help='how many iterations to train in total, the value is in assumption that init step is 1')
     parser.add_argument('--pixel_norm', default=False, action="store_true", help='a normalization method inside the model, you can try use it or not depends on the dataset')
     parser.add_argument('--tanh', default=False, action="store_true", help='an output non-linearity on the output of Generator, you can try use it or not depends on the dataset')
